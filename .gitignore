@@ -19,3 +19,5 @@ blockchain/cache/
 
 .DS_Store
 Thumbs.db
+
+.vscode/

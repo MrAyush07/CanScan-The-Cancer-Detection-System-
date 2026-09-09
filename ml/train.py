@@ -1,11 +1,19 @@
 import os
 import json
+import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.applications import DenseNet121
 from tensorflow.keras.applications.densenet import preprocess_input
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+    f1_score
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -18,6 +26,11 @@ IMG_SIZE = (224, 224)
 BATCH_SIZE = 32
 EPOCHS = 10
 SEED = 42
+
+MODEL_PATH = os.path.join(
+    MODEL_DIR,
+    "skin_densenet121_weighted.keras"
+)
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -72,9 +85,7 @@ inputs = keras.Input(shape=(224, 224, 3))
 
 x = augmentation(inputs)
 x = preprocess_input(x)
-
 x = base_model(x, training=False)
-
 x = layers.GlobalAveragePooling2D()(x)
 x = layers.Dropout(0.3)(x)
 
@@ -86,7 +97,9 @@ outputs = layers.Dense(
 model = keras.Model(inputs, outputs)
 
 model.compile(
-    optimizer=keras.optimizers.Adam(learning_rate=1e-4),
+    optimizer=keras.optimizers.Adam(
+        learning_rate=1e-4
+    ),
     loss="binary_crossentropy",
     metrics=[
         "accuracy",
@@ -96,12 +109,20 @@ model.compile(
     ]
 )
 
+class_weight = {
+    0: 0.62,
+    1: 2.55
+}
+
+print("\nClass weights:")
+print(class_weight)
+
 print("\nModel summary:")
 model.summary()
 
 callbacks = [
     keras.callbacks.ModelCheckpoint(
-        os.path.join(MODEL_DIR, "skin_densenet121.keras"),
+        MODEL_PATH,
         monitor="val_auc",
         mode="max",
         save_best_only=True
@@ -121,35 +142,62 @@ callbacks = [
     )
 ]
 
-print("\nStarting training...")
+print("\nStarting weighted training...")
 
 history = model.fit(
     train_ds,
     validation_data=val_ds,
     epochs=EPOCHS,
+    class_weight=class_weight,
     callbacks=callbacks
 )
 
-print("\nLoading best model...")
+print("\nLoading best weighted model...")
 
-model = keras.models.load_model(
-    os.path.join(MODEL_DIR, "skin_densenet121.keras"
-))
+model = keras.models.load_model(MODEL_PATH)
 
-print("\nEvaluating on test dataset...")
+print("\nGenerating validation predictions...")
 
-results = model.evaluate(
-    test_ds,
-    verbose=1
-)
+val_true = []
+val_prob = []
 
-for name, value in zip(model.metrics_names, results):
-    print(f"{name}: {value:.4f}")
+for images, labels in val_ds:
+    probabilities = model.predict(
+        images,
+        verbose=0
+    ).flatten()
 
-print("\nGenerating predictions...")
+    val_prob.extend(probabilities)
+    val_true.extend(labels.numpy().astype(int))
 
-y_true = []
-y_prob = []
+val_true = np.array(val_true)
+val_prob = np.array(val_prob)
+
+print("\nFinding best threshold...")
+
+best_threshold = 0.5
+best_f1 = 0.0
+
+for threshold in np.arange(0.10, 0.91, 0.01):
+    predictions = (val_prob >= threshold).astype(int)
+
+    score = f1_score(
+        val_true,
+        predictions,
+        zero_division=0
+    )
+
+    if score > best_f1:
+        best_f1 = score
+        best_threshold = float(threshold)
+
+print(f"Best validation threshold: {best_threshold:.2f}")
+print(f"Best validation F1: {best_f1:.4f}")
+
+print("\nGenerating test predictions...")
+
+test_true = []
+test_prob = []
 
 for images, labels in test_ds:
     probabilities = model.predict(
@@ -157,40 +205,68 @@ for images, labels in test_ds:
         verbose=0
     ).flatten()
 
-    y_prob.extend(probabilities)
-    y_true.extend(labels.numpy().astype(int))
+    test_prob.extend(probabilities)
+    test_true.extend(labels.numpy().astype(int))
 
-y_true = tf.convert_to_tensor(y_true).numpy()
-y_prob = tf.convert_to_tensor(y_prob).numpy()
+test_true = np.array(test_true)
+test_prob = np.array(test_prob)
 
-y_pred = (y_prob >= 0.5).astype(int)
+test_pred = (
+    test_prob >= best_threshold
+).astype(int)
 
-print("\nClassification Report:")
+print("\nWeighted Model Classification Report:")
 
 print(
     classification_report(
-        y_true,
-        y_pred,
+        test_true,
+        test_pred,
         target_names=["benign", "malignant"],
-        digits=4
+        digits=4,
+        zero_division=0
     )
 )
 
-print("Confusion Matrix:")
-
 cm = confusion_matrix(
-    y_true,
-    y_pred
+    test_true,
+    test_pred
 )
 
+print("Confusion Matrix:")
 print(cm)
 
-auc = roc_auc_score(
-    y_true,
-    y_prob
+accuracy = float(
+    np.mean(test_true == test_pred)
 )
 
-print(f"\nROC-AUC: {auc:.4f}")
+precision = precision_score(
+    test_true,
+    test_pred,
+    zero_division=0
+)
+
+recall = recall_score(
+    test_true,
+    test_pred,
+    zero_division=0
+)
+
+f1 = f1_score(
+    test_true,
+    test_pred,
+    zero_division=0
+)
+
+auc = roc_auc_score(
+    test_true,
+    test_prob
+)
+
+print(f"\nAccuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Malignant Recall: {recall:.4f}")
+print(f"Malignant F1: {f1:.4f}")
+print(f"ROC-AUC: {auc:.4f}")
 
 history_data = {
     key: [float(value) for value in values]
@@ -198,22 +274,35 @@ history_data = {
 }
 
 with open(
-    os.path.join(MODEL_DIR, "training_history.json"),
+    os.path.join(
+        MODEL_DIR,
+        "weighted_training_history.json"
+    ),
     "w"
 ) as file:
-    json.dump(history_data, file, indent=4)
+    json.dump(
+        history_data,
+        file,
+        indent=4
+    )
 
 with open(
-    os.path.join(MODEL_DIR, "evaluation_results.json"),
+    os.path.join(
+        MODEL_DIR,
+        "weighted_evaluation_results.json"
+    ),
     "w"
 ) as file:
     json.dump(
         {
-            "test_loss": float(results[0]),
-            "test_accuracy": float(results[1]),
-            "test_precision": float(results[2]),
-            "test_recall": float(results[3]),
-            "test_auc": float(results[4]),
+            "model": "DenseNet121",
+            "class_weight": class_weight,
+            "threshold": best_threshold,
+            "validation_f1": float(best_f1),
+            "test_accuracy": accuracy,
+            "test_precision": float(precision),
+            "test_recall": float(recall),
+            "test_f1": float(f1),
             "roc_auc": float(auc),
             "confusion_matrix": cm.tolist()
         },
@@ -221,5 +310,5 @@ with open(
         indent=4
     )
 
-print("\nTraining completed successfully.")
-print("Model saved to:", os.path.join(MODEL_DIR, "skin_densenet121.keras"))
+print("\nWeighted training completed successfully.")
+print("Model saved to:", MODEL_PATH)
