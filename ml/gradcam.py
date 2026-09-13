@@ -3,23 +3,20 @@ import tensorflow as tf
 from PIL import Image
 from tensorflow.keras.applications.densenet import preprocess_input
 
-
 IMAGE_SIZE = (224, 224)
-
 
 def make_gradcam_heatmap(image, model):
     base_model = model.get_layer("densenet121")
+    target_layer = base_model.get_layer("conv5_block16_concat")
 
     grad_model = tf.keras.models.Model(
-        inputs=model.inputs,
-        outputs=[
-            base_model.get_layer("conv5_block16_concat").output,
-            model.output
-        ]
+        inputs=base_model.input,
+        outputs=[target_layer.output, base_model.output]
     )
 
     with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(image)
+        conv_outputs, features = grad_model(image)
+        predictions = model.layers[-1](features)
         prediction = predictions[:, 0]
 
     gradients = tape.gradient(
@@ -45,7 +42,6 @@ def make_gradcam_heatmap(image, model):
 
     return heatmap.numpy()
 
-
 def prepare_image(image_path):
     image = Image.open(image_path).convert("RGB")
     original = image.copy()
@@ -62,8 +58,6 @@ def prepare_image(image_path):
         axis=0
     )
 
-    image_array = preprocess_input(
-        image_array
-    )
+    image_array = preprocess_input(image_array)
 
     return original, image_array
