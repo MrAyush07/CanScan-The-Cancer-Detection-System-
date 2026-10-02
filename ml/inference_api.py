@@ -14,11 +14,7 @@ from gradcam import make_gradcam_heatmap
 app = FastAPI(title="CanScan ML API")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(
-    BASE_DIR,
-    "models",
-    "skin_densenet121_weighted.keras"
-)
+MODEL_PATH = os.path.join(BASE_DIR,"models","skin_densenet121_weighted.h5")
 
 GENERATED_DIR = os.path.join(BASE_DIR, "generated")
 os.makedirs(GENERATED_DIR, exist_ok=True)

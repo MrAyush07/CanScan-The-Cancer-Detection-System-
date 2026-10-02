@@ -1,0 +1,11 @@
+﻿data/
+generated/
+__pycache__/
+*.pyc
+*.csv
+*.json
+train.py
+investigate_model.py
+prepare_dataset.py
+select_threshold.py
+models/skin_densenet121.keras
